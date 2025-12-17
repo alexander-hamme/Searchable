@@ -1,58 +1,116 @@
+import asyncio
+import glob
 import os
 
-import fitz
+import faiss
+import numpy as np
+import pymupdf
+
+from database.vector_db import VectorDatabase
+from database.metadata_db import DocChunkDb, DocMetadata
+from embed.embedders import LocalEmbeddingClient
 
 
-class FileParser:
+class FileIngester:
 
-    def __init__(self):
-        self.pdf_db = PDFDatabase()
+    TEXT_CHUNK_SIZE = 300
 
-    def parse_file(self, filename):
-        ext = os.path.splitext(filename)[1]
+    def __init__(self, embedding_client: LocalEmbeddingClient, vector_db: VectorDatabase):
+        self.doc_chunk_db = DocChunkDb()
+        self.embedding_client = embedding_client
+        self.faiss_manager = vector_db
+
+    def parse_all_files(self, directory: str):
+
+        filepaths = [matches for ext in ["pdf", "txt"]
+                     if len(matches := glob.glob(f"{directory}/*.{ext}")) > 0]
+
+        print(filepaths)
+        filepaths = [path for lst in filepaths for path in lst]
+
+        print(filepaths)
+
+        for path in filepaths:
+            vector_array = self.ingest_single_file(path)
+            if vector_array is None:
+                continue
+            self.faiss_manager.add(vector_array)
+
+        # # 3. Build FAISS index (FlatIP or FlatL2 depending on your choice)
+        # dim = self.faiss_manager.dimension
+        # vectors.shape[1]
+        # #TODO  index = faiss.IndexFlatIP(dim)  # or IndexFlatL2(dim)
+        #
+        # # NOTE: `parse_all_files` must be `async def` for this to work
+        #
+        # for vector_array in await asyncio.gather(*tasks):
+            '''tasks = [self.ingest_file(path) for path in filepaths]
+
+
+        # 3. Build FAISS index (FlatIP or FlatL2 depending on your choice)
+        dim = self.faiss_manager.dimension
+        vectors.shape[1]
+        #TODO  index = faiss.IndexFlatIP(dim)  # or IndexFlatL2(dim)
+
+        # NOTE: `parse_all_files` must be `async def` for this to work
+        
+        for vector_array in await asyncio.gather(*tasks):
+            self.faiss_manager.add(vector_array)'''
+
+
+    def ingest_single_file(self, filepath):
+        ext = os.path.splitext(filepath)[1]
         match ext:
             case '.pdf':
-                self.pdf_db.ingest_pdf(filename)
-                return self.pdf_db.get_pdf_as_chunks(filename)
+                return self._ingest_and_vectorize(iter(self._iter_pdf_pages(filepath)))
 
-            case _: raise NotImplementedError(f"Unsupported file type: {ext}")
+            case _:
+                print(f"Unsupported file type: {ext}  ({filepath})")
+                return None
 
+        #raise NotImplementedError(f"Unsupported file type: {ext}")
 
-class PDFDatabase:
+    def retrieve_chunk_by_id(self, chunk_id: int) -> np.ndarray:
+        return self.doc_chunk_db.get(chunk_id)
 
-    def __init__(self):
-        self.pdf_mapper = {}
+    def _chunk_text(self, page_text: str):
+        # TODO split by words
+        for chunk_idx, text_idx in enumerate(range(0, len(page_text), self.TEXT_CHUNK_SIZE)):
+            yield chunk_idx, page_text[text_idx:text_idx + self.TEXT_CHUNK_SIZE]
 
-    def ingest_pdf(self, filepath):
+    def _ingest_and_vectorize(self, page_iterator) -> np.ndarray:
+        text_chunks = []
+        for page_no, page_text in page_iterator:
+            # doc_metadata = DocMetadata(page_no, None)
+            for chunk_id, text_chunk in self._chunk_text(page_text):
+                self.doc_chunk_db.insert_chunk(chunk_id, {'page_no': page_no}, text_chunk)  # Paragraph number?
+                text_chunks.append(text_chunk)
 
-        with fitz.open(filepath) as doc:
-            page_map = []
-            text_chunks = []
+        return self.embedding_client.embed_documents(text_chunks)
 
-            char_offset = 0
+    @staticmethod
+    def _iter_pdf_pages(filepath):
+        with pymupdf.open(filepath) as doc:
             for page_num in range(len(doc)):
                 page = doc[page_num]
                 text = page.get_text()  # simple text extraction
-                page_map.append((page_num, char_offset))
-                text_chunks.append(text)
-                char_offset += len(text)
+                yield page_num, text
 
-        self.pdf_mapper[filepath] = {
-            "page_map": page_map,
-            "text_chunks": text_chunks
-        }
 
-    def get_pdf_as_chunks(self, filepath):
-        return self.pdf_mapper[filepath]["text_chunks"]
 
-    def offset_to_page(self, filepath, start_char):
-        # page_map is arranged in-order by start_char
-        # find last page whose start_char <= our start_char
-        last_page = -1
-        for page_num, page_start in self.pdf_mapper[filepath]["page_map"]:
-            if page_start <= start_char:
-                last_page = page_num
-            else:
-                break
 
-        return last_page
+
+    # def offset_to_page(self, filepath, start_char):
+    #     # page_map is arranged in-order by start_char
+    #     # find last page whose start_char <= our start_char
+    #     last_page = -1
+    #     for page_num, page_start in self.pdf_mapper[filepath]["page_map"]:
+    #         if page_start <= start_char:
+    #             last_page = page_num
+    #         else:
+    #             break
+    #
+    #     return last_page
+
+
+    # fp.parse_all_files("/Users/alex/Documents/Searchable/SampleData")
