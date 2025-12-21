@@ -16,6 +16,7 @@ class FileIngester:
     TEXT_CHUNK_SIZE = 300
 
     def __init__(self, embedding_client: LocalEmbeddingClient, vector_db: VectorDatabase):
+        self.current_chunk_id = 0
         self.doc_chunk_db = DocChunkDb()
         self.embedding_client = embedding_client
         self.faiss_manager = vector_db
@@ -74,11 +75,25 @@ class FileIngester:
         return self.doc_chunk_db.get(chunk_id)
 
     def _chunk_text(self, page_text: str):
-        # TODO split by words
-        for chunk_idx, text_idx in enumerate(range(0, len(page_text), self.TEXT_CHUNK_SIZE)):
-            yield chunk_idx, page_text[text_idx:text_idx + self.TEXT_CHUNK_SIZE]
+        # TODO split by words / phrases     --> need to check length and use threshold
+        for text_idx in range(0, len(page_text), self.TEXT_CHUNK_SIZE):
+            yield self.current_chunk_id, page_text[text_idx:text_idx + self.TEXT_CHUNK_SIZE]
+            self.current_chunk_id += 1
 
     def _ingest_and_vectorize(self, page_iterator) -> np.ndarray:
+        """
+        Processes and vectorizes text data using a page iterator. The method retrieves
+        text chunks from the provided pages, processes them, and stores metadata
+        information for each chunk. This data is then sent to an embedding client
+        to generate corresponding vector embeddings.
+
+        :param page_iterator: An iterator providing tuples of (page_no, page_text),
+            where page_no is the page number and page_text is the textual content
+            of that page.
+        :return: A NumPy array containing vectorized embeddings of the processed
+            text chunks.
+        :rtype: np.ndarray
+        """
         text_chunks = []
         for page_no, page_text in page_iterator:
             # doc_metadata = DocMetadata(page_no, None)

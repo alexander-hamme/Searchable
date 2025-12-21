@@ -21,6 +21,7 @@ class VectorDatabase:
     def add(self, embeddings_array: np.ndarray):
         if embeddings_array.shape[1] != self.dimension:
             raise ValueError(f"Dimension mismatch: {embeddings_array.shape[0]} != {self.dimension}")
+        faiss.normalize_L2(embeddings_array)
         self.index.add(embeddings_array)
 
     def save_index(self, path: str):
@@ -28,6 +29,13 @@ class VectorDatabase:
         pass
 
     def search(self, query_vector: np.ndarray, top_k: int = 10, top_p: float = 0.5) -> List[Dict]:
+        faiss.normalize_L2(query_vector)
         distances, top_indices = self.index.search(query_vector, k=20)
-        match_scores = 100 * (1 - distances)[0]
-        pass
+        top_indices = top_indices[0]
+        print(top_indices)
+        d_min, d_max = distances.min(), distances.max()
+        # normalized_distances = (distances - d_min) / (d_max - d_min)
+        match_scores = 100 * (1 - normalized_distances)[0]
+        return [
+            {"score": score, "chunk_id": _id} for score, _id in zip(match_scores, top_indices)
+        ]
